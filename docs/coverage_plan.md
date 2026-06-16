@@ -2,50 +2,49 @@
 
 ## 1. Functional Coverage Points
 
-| Coverage Point Name | Description | Target Bins / Range | Goal (%) |
+| Coverage Item ID | Description | Bin Definitions / Corner Cases | Target % |
 | :--- | :--- | :--- | :--- |
-| `cp_data_in` | Verifies that all classes of data bytes are transmitted. | `all_zeros` (0x00), `all_ones` (0xFF), `alternating_55` (0x55), `alternating_AA` (0xAA), and 4 auto-bins for other values. | 100% |
-| `cp_prescale` | Verifies that different ranges of baud rates are tested. | `min_prescale` (2), `small` (3-20), `medium` (21-100), `large` (101-65535). | 100% |
-| `cp_tx_start` | Verifies the stimulus density of the start trigger. | `idle` (0), `active` (1). | 100% |
-| `cross_data_prescale` | Cross coverage between data patterns and prescaler values. | Cross of `cp_data_in` and `cp_prescale`. | 90% |
+| **CP_DATA_IN** | Coverage of the parallel input data byte | - `all_zeros` (8'h00)<br>- `all_ones` (8'hFF)<br>- `alternating_0` (8'h55)<br>- `alternating_1` (8'hAA)<br>- `walking_ones` (one-hot patterns)<br>- `others` (standard distribution) | 100% |
+| **CP_PRESCALE** | Coverage of the baud rate divisor values | - `min_scale` (2 to 8)<br>- `mid_scale` (9 to 100)<br>- `max_scale` (> 100) | 100% |
+| **CP_TX_START** | Coverage of start trigger conditions | - `start_while_idle` (valid start)<br>- `start_while_busy` (ignored start) | 100% |
+| **CR_DATA_X_PRESCALE** | Cross coverage of data patterns and prescale values | Cross of `CP_DATA_IN` and `CP_PRESCALE` | 90% |
 
 ## 2. SystemVerilog Covergroup Definition
 
 ```systemverilog
-covergroup uart_tx_cg @(posedge clk);
+covergroup cg_uart_tx @(posedge clk);
     option.per_instance = 1;
-    option.name = "uart_tx_functional_coverage";
+    option.goal = 100;
 
-    // Coverpoint for Data Input
-    cp_data_in: coverpoint data_in {
-        bins all_zeros       = {8'h00};
-        bins all_ones        = {8'hFF};
-        bins alternating_55  = {8'h55};
-        bins alternating_AA  = {8'hAA};
-        bins general_payload[4] = {[8'h01:8'hFE]} with (!(item in {8'h55, 8'hAA}));
+    // Coverpoint for input data patterns
+    cp_data: coverpoint data_in {
+        bins all_zeros     = {8'h00};
+        bins all_ones      = {8'hFF};
+        bins alternating_a = {8'h55};
+        bins alternating_b = {8'hAA};
+        bins walking_ones[] = {8'h01, 8'h02, 8'h04, 8'h08, 8'h10, 8'h20, 8'h40, 8'h80};
+        bins others        = default;
     }
 
-    // Coverpoint for Prescaler Divisor
+    // Coverpoint for prescale configurations
     cp_prescale: coverpoint prescale {
-        bins min_prescale    = {16'd2};
-        bins small_prescale  = {[16'd3:16'd20]};
-        bins medium_prescale = {[16'd21:16'd100]};
-        bins large_prescale  = {[16'd101:16'hFFFF]};
+        bins min_scale = {[2:8]};
+        bins mid_scale = {[9:100]};
+        bins max_scale = {[101:65535]};
     }
 
-    // Coverpoint for Start Trigger
-    cp_tx_start: coverpoint tx_start {
-        bins idle   = {1'b0};
-        bins active = {1'b1};
+    // Coverpoint for start signal behavior
+    cp_start: coverpoint tx_start {
+        bins asserted = {1'b1};
+        bins deasserted = {1'b0};
     }
 
-    // Cross Coverage
-    cross_data_prescale: cross cp_data_in, cp_prescale;
+    // Cross coverage to ensure different data patterns are tested across different baud rates
+    cross_data_prescale: cross cp_data, cp_prescale;
 endgroup
 ```
 
 ## 3. Corner Cases to Cover
-1.  **Minimum Prescaler (`prescale = 2`)**: Verifies that the FSM can operate at maximum speed without state-skipping or timing violations.
-2.  **Back-to-Back Transmission**: Verifies that `tx_start` can be asserted in the exact cycle `tx_busy` drops, ensuring zero-bubble throughput.
-3.  **Start During Busy**: Verifies that asserting `tx_start` while the transmitter is active does not corrupt the current frame or trigger a premature restart.
-4.  **All Zeros (0x00) and All Ones (0xFF)**: Verifies correct framing when the data payload matches the start bit (0) or stop/idle bit (1).
+1.  **Minimum Prescale Value**: Running with `prescale = 2` (highest speed, shortest bit period).
+2.  **Maximum Prescale Value**: Running with `prescale = 65535` (slowest speed, longest bit period).
+3.  **Rogue Start Strobe**: Asserting `tx_start` exactly one clock cycle before the current transmission finishes to verify that the FSM transitions correctly without dropping or corrupting the next frame.

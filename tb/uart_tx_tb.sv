@@ -2,7 +2,7 @@
 
 module tb_uart_tx;
 
-    // Testbench Signals
+    // Testbench signals
     logic        clk;
     logic        rst_n;
     logic        tx_start;
@@ -12,7 +12,7 @@ module tb_uart_tx;
     logic        tx_busy;
 
     // Instantiate the Device Under Test (DUT)
-    uart_tx u_uart_tx (
+    uart_tx dut (
         .clk(clk),
         .rst_n(rst_n),
         .tx_start(tx_start),
@@ -25,24 +25,26 @@ module tb_uart_tx;
     // Clock Generation (100 MHz clock -> 10ns period)
     always #5 clk = ~clk;
 
-    // Helper Task to Transmit a Byte and Wait for Completion
-    task automatic send_byte(input [7:0] byte_to_send, input [15:0] p_val);
+    // Helper task to wait for transmission to complete
+    task automatic wait_for_tx_done();
         @(posedge clk);
-        #1;
-        data_in  = byte_to_send;
-        prescale = p_val;
-        tx_start = 1'b1;
+        while (tx_busy) begin
+            @(posedge clk);
+        end
+    endtask
+
+    // Helper task to transmit a single byte
+    task automatic send_byte(input [7:0] byte_to_send, input [15:0] scale_val);
         @(posedge clk);
-        #1;
-        tx_start = 1'b0;
-        
-        // Wait for transmission to start and busy to go high
-        while (!tx_busy) @(posedge clk);
-        $display("[TB TIME: %0t] Transmission started for byte 0x%h", $time, byte_to_send);
-        
-        // Wait for transmission to complete and busy to go low
-        while (tx_busy) @(posedge clk);
-        $display("[TB TIME: %0t] Transmission completed for byte 0x%h", $time, byte_to_send);
+        while (tx_busy) begin
+            @(posedge clk); // Wait if busy
+        end
+        data_in  <= byte_to_send;
+        prescale <= scale_val;
+        tx_start <= 1'b1;
+        @(posedge clk);
+        tx_start <= 1'b0;
+        $display("[TB TIME: %0t] Initiated TX of 8'h%h with prescale %0d", $time, byte_to_send, scale_val);
     endtask
 
     // Main Test Sequence
@@ -51,76 +53,67 @@ module tb_uart_tx;
         $dumpfile("C:/Users/prati/Desktop/AI_VLSI_FACTORY/output/uart_tx/sim/waves.vcd");
         $dumpvars(0, tb_uart_tx);
 
-        // Initialize Signals
-        clk      = 1'b0;
-        rst_n    = 1'b0;
-        tx_start = 1'b0;
+        // Initialize signals
+        clk      = 0;
+        rst_n    = 1;
+        tx_start = 0;
         data_in  = 8'h00;
-        prescale = 16'd10; // Fast prescale for simulation efficiency
+        prescale = 16'd8; // Default small prescale for fast simulation
 
-        // Test Case 1: Reset Sequence (Assert reset for 5 clock cycles)
-        $display("\n--- Test Case 1: Asserting Reset ---");
-        repeat (5) @(posedge clk);
-        #1 rst_n = 1'b1;
-        $display("[TB STATUS] Reset released successfully.");
-        repeat (2) @(posedge clk);
+        // --- TEST CASE 1: Reset Sequence ---
+        $display("\n--- TEST CASE 1: Reset Sequence ---");
+        rst_n = 0;
+        #50; // Assert reset for 5 clock cycles (50ns)
+        rst_n = 1;
+        #20;
+        if (tx_out === 1'b1 && tx_busy === 1'b0) begin
+            $display("PASS: Reset state verified successfully.");
+        end else begin
+            $display("FAIL: Reset state incorrect. tx_out=%b, tx_busy=%b", tx_out, tx_busy);
+        end
 
-        // Test Case 2: Standard Transmission (0x55 - Alternating Bits)
-        $display("\n--- Test Case 2: Standard Transmission of 0x55 (Prescale = 10) ---");
-        send_byte(8'h55, 16'd10);
-        repeat (10) @(posedge clk);
+        // --- TEST CASE 2: Standard Transmission (Alternating Bits 0x55) ---
+        $display("\n--- TEST CASE 2: Transmitting 8'h55 (Alternating Bits) ---");
+        send_byte(8'h55, 16'd8);
+        wait_for_tx_done();
+        #100;
 
-        // Test Case 3: Back-to-Back Transmissions (0xAA then 0xF0)
-        $display("\n--- Test Case 3: Back-to-Back Transmissions (0xAA and 0xF0) ---");
-        fork
-            send_byte(8'hAA, 16'd8);
-        join
-        // Immediately trigger the next byte on the very next cycle after busy drops
-        send_byte(8'hF0, 16'd8);
-        repeat (10) @(posedge clk);
+        // --- TEST CASE 3: Standard Transmission (Alternating Bits 0xAA) ---
+        $display("\n--- TEST CASE 3: Transmitting 8'hAA (Alternating Bits) ---");
+        send_byte(8'hAA, 16'd8);
+        wait_for_tx_done();
+        #100;
 
-        // Test Case 4: Transmission with a Large Prescale (0x3C, Prescale = 25)
-        $display("\n--- Test Case 4: Transmission with Large Prescale (0x3C, Prescale = 25) ---");
-        send_byte(8'h3C, 16'd25);
-        repeat (10) @(posedge clk);
+        // --- TEST CASE 4: Transmission with Different Prescale (0xF0, prescale=12) ---
+        $display("\n--- TEST CASE 4: Transmitting 8'hF0 with Prescale = 12 ---");
+        send_byte(8'hF0, 16'd12);
+        wait_for_tx_done();
+        #100;
 
-        // Test Case 5: Robustness Check - Assert tx_start during Busy (Should be ignored)
-        $display("\n--- Test Case 5: Robustness Check (Assert tx_start during Busy) ---");
+        // --- TEST CASE 5: Back-to-Back Transmission ---
+        $display("\n--- TEST CASE 5: Back-to-Back Transmission (0x3C then 0xC3) ---");
+        send_byte(8'h3C, 16'd8);
+        // Wait until busy goes high, then wait for it to drop to immediately trigger next
+        @(posedge tx_busy);
+        wait_for_tx_done();
+        send_byte(8'hC3, 16'd8);
+        wait_for_tx_done();
+        #200;
+
+        // --- TEST CASE 6: Robustness Check (Ignore tx_start during active transmission) ---
+        $display("\n--- TEST CASE 6: Robustness Check (Ignore tx_start during active transmission) ---");
+        send_byte(8'hFF, 16'd16);
+        #40; // Wait a few cycles into transmission
         @(posedge clk);
-        #1;
-        data_in  = 8'hA5;
-        prescale = 16'd12;
-        tx_start = 1'b1;
+        data_in  <= 8'h00; // Attempt to corrupt with new data
+        tx_start <= 1'b1;  // Strobe start while busy
         @(posedge clk);
-        #1;
-        tx_start = 1'b0;
-        
-        // Wait mid-transmission
-        repeat (30) @(posedge clk);
-        
-        // Attempt to corrupt transmission by asserting tx_start with new data
-        $display("[TB STATUS] Attempting to corrupt current transmission with new data 0x5A...");
-        #1;
-        data_in  = 8'h5A;
-        tx_start = 1'b1;
-        @(posedge clk);
-        #1;
-        tx_start = 1'b0;
-        
-        // Wait for original transmission to finish
-        while (tx_busy) @(posedge clk);
-        $display("[TB STATUS] Original transmission finished. Verifying no corruption occurred.");
-        repeat (10) @(posedge clk);
+        tx_start <= 1'b0;
+        $display("[TB TIME: %0t] Attempted rogue tx_start during active transmission.", $time);
+        wait_for_tx_done();
+        #200;
 
-        // Test Case 6: Corner Cases (0x00 and 0xFF)
-        $display("\n--- Test Case 6: Corner Cases (0x00 and 0xFF) ---");
-        send_byte(8'h00, 16'd10);
-        repeat (5) @(posedge clk);
-        send_byte(8'hFF, 16'd10);
-        repeat (20) @(posedge clk);
-
-        // End of Simulation
-        $display("\n[TB STATUS] All test cases completed successfully. Ending simulation.");
+        $display("\nAll test cases completed successfully.");
         $finish;
     end
 

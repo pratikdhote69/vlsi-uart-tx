@@ -1,13 +1,13 @@
 `timescale 1ns/1ps
 
 module uart_tx (
-    input  logic        clk,          // System clock
-    input  logic        rst_n,        // Active-low asynchronous reset
-    input  logic        tx_start,     // Start transmission trigger
-    input  logic [7:0]  data_in,      // Parallel data byte to transmit
-    input  logic [15:0] prescale,     // Baud rate prescaler value
-    output logic        tx_out,       // Serial UART output
-    output logic        tx_busy       // Transmitter busy status flag
+    input  logic        clk,       // System clock
+    input  logic        rst_n,     // Active-low asynchronous reset
+    input  logic        tx_start,  // Start transmission trigger
+    input  logic [7:0]  data_in,   // 8-bit data to transmit
+    input  logic [15:0] prescale,  // Clock cycles per bit (Baud divisor)
+    output logic        tx_out,    // Serial TX output line
+    output logic        tx_busy    // Transmitter busy status flag
 );
 
     // FSM State Encoding
@@ -18,81 +18,105 @@ module uart_tx (
         ST_STOP  = 2'b11
     } state_t;
 
-    // Internal Registers
-    state_t      state;               // Current state register
-    logic [7:0]  data_reg;            // Latched data register
-    logic [15:0] prescale_reg;        // Latched prescaler register
-    logic [15:0] baud_cnt;            // Baud rate generator counter
-    logic [2:0]  bit_idx;             // Data bit index counter (0 to 7)
+    state_t state_reg, state_next;
 
-    // Synchronous FSM and Output Logic
+    // Internal Registers
+    logic [15:0] clk_cnt_reg, clk_cnt_next; // Baud rate generator counter
+    logic [2:0]  bit_cnt_reg, bit_cnt_next; // Data bit index counter (0 to 7)
+    logic [7:0]  sh_reg, sh_next;           // Shift register for serialization
+    logic        tx_out_reg, tx_out_next;   // Registered TX output
+    logic        tx_busy_reg, tx_busy_next; // Registered busy flag
+
+    // Sequential Block: State and Register Update
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state        <= ST_IDLE;
-            data_reg     <= 8'h00;
-            prescale_reg <= 16'h0000;
-            baud_cnt     <= 16'h0000;
-            bit_idx      <= 3'b000;
-            tx_out       <= 1'b1;     // UART idle state is high
-            tx_busy      <= 1'b0;     // Not busy on reset
+            state_reg    <= ST_IDLE;
+            clk_cnt_reg  <= '0;
+            bit_cnt_reg  <= '0;
+            sh_reg       <= '0;
+            tx_out_reg   <= 1'b1; // UART idle state is high
+            tx_busy_reg  <= 1'b0;
         end else begin
-            case (state)
-                ST_IDLE: begin
-                    tx_out   <= 1'b1; // Hold line high during idle
-                    tx_busy  <= 1'b0;
-                    baud_cnt <= 16'h0000;
-                    
-                    if (tx_start) begin
-                        state        <= ST_START;
-                        data_reg     <= data_in;
-                        // Guard against invalid prescaler values (minimum divisor is 2)
-                        prescale_reg <= (prescale < 16'd2) ? 16'd2 : prescale;
-                        tx_busy      <= 1'b1;
-                        tx_out       <= 1'b0; // Drive start bit low immediately
-                    end
-                end
-
-                ST_START: begin
-                    if (baud_cnt >= prescale_reg - 1) begin
-                        baud_cnt <= 16'h0000;
-                        state    <= ST_DATA;
-                        bit_idx  <= 3'b000;
-                        tx_out   <= data_reg[0]; // Drive first data bit (LSB)
-                    end else begin
-                        baud_cnt <= baud_cnt + 1'b1;
-                    end
-                end
-
-                ST_DATA: begin
-                    if (baud_cnt >= prescale_reg - 1) begin
-                        baud_cnt <= 16'h0000;
-                        if (bit_idx == 3'd7) begin
-                            state  <= ST_STOP;
-                            tx_out <= 1'b1; // Drive stop bit high
-                        end else begin
-                            bit_idx <= bit_idx + 1'b1;
-                            tx_out  <= data_reg[bit_idx + 1]; // Drive next bit
-                        end
-                    end else begin
-                        baud_cnt <= baud_cnt + 1'b1;
-                    end
-                end
-
-                ST_STOP: begin
-                    if (baud_cnt >= prescale_reg - 1) begin
-                        baud_cnt <= 16'h0000;
-                        state    <= ST_IDLE;
-                        tx_busy  <= 1'b0; // Clear busy flag
-                    end else begin
-                        baud_cnt <= baud_cnt + 1'b1;
-                    end
-                end
-
-                default: begin
-                    state <= ST_IDLE;
-                end
-            endcase
+            state_reg    <= state_next;
+            clk_cnt_reg  <= clk_cnt_next;
+            bit_cnt_reg  <= bit_cnt_next;
+            sh_reg       <= sh_next;
+            tx_out_reg   <= tx_out_next;
+            tx_busy_reg  <= tx_busy_next;
         end
     end
+
+    // Combinational Block: Next-State and Output Logic
+    always_comb begin
+        // Default assignments to prevent latches
+        state_next    = state_reg;
+        clk_cnt_next  = clk_cnt_reg;
+        bit_cnt_next  = bit_cnt_reg;
+        sh_next       = sh_reg;
+        tx_out_next   = tx_out_reg;
+        tx_busy_next  = tx_busy_reg;
+
+        case (state_reg)
+            ST_IDLE: begin
+                tx_out_next  = 1'b1;
+                tx_busy_next = 1'b0;
+                clk_cnt_next = '0;
+                bit_cnt_next = '0;
+                if (tx_start) begin
+                    sh_next      = data_in; // Latch input data
+                    tx_busy_next = 1'b1;
+                    state_next   = ST_START;
+                end
+            end
+
+            ST_START: begin
+                tx_out_next  = 1'b0; // Start bit is low
+                tx_busy_next = 1'b1;
+                if (clk_cnt_reg >= (prescale - 1)) begin
+                    clk_cnt_next = '0;
+                    state_next   = ST_DATA;
+                end else begin
+                    clk_cnt_next = clk_cnt_reg + 1'b1;
+                end
+            end
+
+            ST_DATA: begin
+                tx_out_next  = sh_reg[0]; // Send LSB first
+                tx_busy_next = 1'b1;
+                if (clk_cnt_reg >= (prescale - 1)) begin
+                    clk_cnt_next = '0;
+                    sh_next      = {1'b0, sh_reg[7:1]}; // Shift right
+                    if (bit_cnt_reg == 3'd7) begin
+                        bit_cnt_next = '0;
+                        state_next   = ST_STOP;
+                    end else begin
+                        bit_cnt_next = bit_cnt_reg + 1'b1;
+                    end
+                end else begin
+                    clk_cnt_next = clk_cnt_reg + 1'b1;
+                end
+            end
+
+            ST_STOP: begin
+                tx_out_next  = 1'b1; // Stop bit is high
+                tx_busy_next = 1'b1;
+                if (clk_cnt_reg >= (prescale - 1)) begin
+                    clk_cnt_next = '0;
+                    tx_busy_next = 1'b0;
+                    state_next   = ST_IDLE;
+                end else begin
+                    clk_cnt_next = clk_cnt_reg + 1'b1;
+                end
+            end
+
+            default: begin
+                state_next = ST_IDLE;
+            end
+        endcase
+    end
+
+    // Continuous assignment to output ports
+    assign tx_out  = tx_out_reg;
+    assign tx_busy = tx_busy_reg;
 
 endmodule
