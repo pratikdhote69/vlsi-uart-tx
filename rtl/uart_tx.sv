@@ -1,99 +1,98 @@
 `timescale 1ns/1ps
-module uart_tx(
-    input  logic clk,
-    input  logic reset,
-    input  logic [7:0] tx_data,
-    input  logic tx_valid,
-    output logic tx_ready,
-    output logic tx_out
+
+module uart_tx (
+    input  logic        clk,          // System clock
+    input  logic        rst_n,        // Active-low asynchronous reset
+    input  logic        tx_start,     // Start transmission trigger
+    input  logic [7:0]  data_in,      // Parallel data byte to transmit
+    input  logic [15:0] prescale,     // Baud rate prescaler value
+    output logic        tx_out,       // Serial UART output
+    output logic        tx_busy       // Transmitter busy status flag
 );
 
-// shift_reg needs to be 9 bits: 1 start bit + 8 data bits.
-// The stop bit is handled separately.
-logic [8:0] shift_reg;
-// Counter for 10 bits (0-9) to cover 1 start bit + 8 data bits + 1 stop bit.
-// Counts down from 9 to 0.
-logic [3:0] counter;
-// Flag to indicate if a transmission is in progress.
-logic tx_busy;
+    // FSM State Encoding
+    typedef enum logic [1:0] {
+        ST_IDLE  = 2'b00,
+        ST_START = 2'b01,
+        ST_DATA  = 2'b10,
+        ST_STOP  = 2'b11
+    } state_t;
 
-// Internal signal to determine the next state of tx_out.
-// This helps to correctly drive tx_out in the same cycle tx_valid is asserted.
-logic next_tx_out;
+    // Internal Registers
+    state_t      state;               // Current state register
+    logic [7:0]  data_reg;            // Latched data register
+    logic [15:0] prescale_reg;        // Latched prescaler register
+    logic [15:0] baud_cnt;            // Baud rate generator counter
+    logic [2:0]  bit_idx;             // Data bit index counter (0 to 7)
 
-// Combinational logic to determine the next_tx_out value based on current state.
-// This ensures tx_out is correctly driven for the start bit in the initial cycle
-// and for subsequent data/stop bits.
-always_comb begin
-    next_tx_out = 1'b1; // Default to idle high (or stop bit)
-
-    if (!tx_busy && tx_valid) begin
-        // If a new transmission is requested and the transmitter is idle,
-        // the output should immediately go low for the start bit.
-        next_tx_out = 1'b0;
-    end else if (tx_busy) begin
-        // If transmission is in progress:
-        if (counter > 4'd0) begin
-            // Output the current LSB of shift_reg (start bit or data bit).
-            next_tx_out = shift_reg[0];
+    // Synchronous FSM and Output Logic
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state        <= ST_IDLE;
+            data_reg     <= 8'h00;
+            prescale_reg <= 16'h0000;
+            baud_cnt     <= 16'h0000;
+            bit_idx      <= 3'b000;
+            tx_out       <= 1'b1;     // UART idle state is high
+            tx_busy      <= 1'b0;     // Not busy on reset
         end else begin
-            // All data bits (and start bit) have been transmitted.
-            // Output the stop bit.
-            next_tx_out = 1'b1;
+            case (state)
+                ST_IDLE: begin
+                    tx_out   <= 1'b1; // Hold line high during idle
+                    tx_busy  <= 1'b0;
+                    baud_cnt <= 16'h0000;
+                    
+                    if (tx_start) begin
+                        state        <= ST_START;
+                        data_reg     <= data_in;
+                        // Guard against invalid prescaler values (minimum divisor is 2)
+                        prescale_reg <= (prescale < 16'd2) ? 16'd2 : prescale;
+                        tx_busy      <= 1'b1;
+                        tx_out       <= 1'b0; // Drive start bit low immediately
+                    end
+                end
+
+                ST_START: begin
+                    if (baud_cnt >= prescale_reg - 1) begin
+                        baud_cnt <= 16'h0000;
+                        state    <= ST_DATA;
+                        bit_idx  <= 3'b000;
+                        tx_out   <= data_reg[0]; // Drive first data bit (LSB)
+                    end else begin
+                        baud_cnt <= baud_cnt + 1'b1;
+                    end
+                end
+
+                ST_DATA: begin
+                    if (baud_cnt >= prescale_reg - 1) begin
+                        baud_cnt <= 16'h0000;
+                        if (bit_idx == 3'd7) begin
+                            state  <= ST_STOP;
+                            tx_out <= 1'b1; // Drive stop bit high
+                        end else begin
+                            bit_idx <= bit_idx + 1'b1;
+                            tx_out  <= data_reg[bit_idx + 1]; // Drive next bit
+                        end
+                    end else begin
+                        baud_cnt <= baud_cnt + 1'b1;
+                    end
+                end
+
+                ST_STOP: begin
+                    if (baud_cnt >= prescale_reg - 1) begin
+                        baud_cnt <= 16'h0000;
+                        state    <= ST_IDLE;
+                        tx_busy  <= 1'b0; // Clear busy flag
+                    end else begin
+                        baud_cnt <= baud_cnt + 1'b1;
+                    end
+                end
+
+                default: begin
+                    state <= ST_IDLE;
+                end
+            endcase
         end
     end
-    // If !tx_busy and !tx_valid, next_tx_out remains 1'b1 (idle).
-end
-
-
-always @(posedge clk) begin
-    if (reset) begin
-        // Reset the module to its idle state.
-        shift_reg <= 9'd0;
-        counter <= 4'd0;
-        tx_busy <= 1'b0;
-        tx_ready <= 1'b1; // Ready to accept new data.
-        tx_out <= 1'b1;   // UART idle state is high.
-    end else begin
-        // Default assignments for outputs. These will be overridden by specific state logic.
-        // tx_ready defaults to 1'b1 (ready) unless busy.
-        // tx_out is driven by next_tx_out.
-        tx_ready <= 1'b1;
-        tx_out <= next_tx_out; // CRITICAL FIX: Drive tx_out from the combinational next_tx_out.
-
-        // Internal registers hold their value by default if not explicitly updated.
-        // Explicit assignments like 'shift_reg <= shift_reg;' are redundant in always_ff blocks.
-
-        if (tx_valid && !tx_busy) begin
-            // A new transmission request is received and the transmitter is idle.
-            // Load the data into the shift register.
-            // Frame format for shift_reg: {Data[7:0], Start_Bit (0)}.
-            shift_reg <= {tx_data, 1'b0};
-            tx_busy <= 1'b1;    // Mark transmitter as busy.
-            tx_ready <= 1'b0;   // Not ready for new data during transmission.
-            counter <= 4'd9;    // Initialize counter for 10 bits (9 down to 0).
-                                // This covers 1 start bit, 8 data bits, and 1 stop bit.
-        end else if (tx_busy) begin
-            // Transmission is currently in progress.
-            tx_ready <= 1'b0; // Still not ready for new data.
-
-            if (counter > 4'd0) begin
-                // Transmit data bits (including the start bit, which was output in the previous cycle).
-                // 'shift_reg' is shifted right to bring the next bit to the LSB position.
-                shift_reg <= shift_reg >> 1; // Shift right, LSB first.
-                counter <= counter - 4'd1;   // Decrement bit counter.
-            end else begin
-                // All data bits (and start bit) have been transmitted, and the stop bit has been output.
-                // Transmission complete, return to idle.
-                tx_busy <= 1'b0;
-                // counter and shift_reg will retain their values (0 and 0 respectively)
-                // until a new transmission starts or reset occurs.
-            end
-        end
-        // If neither (tx_valid && !tx_busy) nor tx_busy, the module is idle.
-        // In this case, tx_ready retains its default assignment (1'b1).
-        // tx_out is driven by next_tx_out, which defaults to 1'b1 when idle.
-    end
-end
 
 endmodule
