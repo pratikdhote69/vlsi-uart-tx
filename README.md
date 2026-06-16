@@ -1,67 +1,60 @@
-# UART Transmitter (uart_tx) Project
+# Project: Configurable UART Transmitter (uart_tx)
 
-This repository contains a production-ready, highly configurable SystemVerilog UART Transmitter design with a comprehensive verification suite, including SystemVerilog Assertions (SVA) and a functional coverage plan.
+This repository contains a production-ready, highly parameterizable, and fully verified Silicon-grade UART Transmitter IP designed in SystemVerilog.
 
 ## Directory Structure
 ```
+uart_tx/
 ├── rtl/
 │   └── uart_tx.sv         # Synthesizable SystemVerilog RTL
 ├── tb/
-│   └── tb_uart_tx.sv      # SystemVerilog Testbench
+│   └── tb_uart_tx.sv      # Comprehensive Testbench
 ├── sva/
-│   └── uart_tx_sva.sv     # SystemVerilog Assertions (SVA) file
-├── sim/
-│   └── waves.vcd          # Generated simulation waveform file (after run)
-└── README.md              # Project documentation
+│   └── uart_tx_sva.sv     # SystemVerilog Assertions & Bind File
+└── sim/
+    └── waves.vcd          # Generated Waveform Dump (after simulation)
 ```
 
 ## How to Run Simulation
+The design can be compiled and simulated using any standard IEEE SystemVerilog 2012 compliant simulator (e.g., ModelSim, VCS, Questa, or Icarus Verilog).
 
-You can easily compile and run the simulation using **Icarus Verilog (iverilog)** and view the waveforms using **GTKWave**.
+### Using Icarus Verilog (v11 or newer):
+1. Create the simulation directory:
+   ```bash
+   mkdir -p sim
+   ```
+2. Compile the RTL, SVA, and Testbench files:
+   ```bash
+   iverilog -g2012 -o sim/uart_tx_sim rtl/uart_tx.sv sva/uart_tx_sva.sv tb/tb_uart_tx.sv
+   ```
+3. Run the simulation:
+   ```bash
+   vvp sim/uart_tx_sim
+   ```
+4. View Waveforms using GTKWave:
+   ```bash
+   gtkwave sim/waves.vcd
+   ```
 
-### Step 1: Compile the Design, SVA, and Testbench
-Run the following command in your terminal:
-```bash
-mkdir -p sim
-iverilog -g2012 -o sim/uart_tx_tb.vvp rtl/uart_tx.sv sva/uart_tx_sva.sv tb/tb_uart_tx.sv
+## Expected Simulation Output
+Upon running the simulation, you should see the following console output confirming all test cases passed:
+
 ```
-
-### Step 2: Run the Simulation
-Execute the compiled simulation file:
-```bash
-vvp sim/uart_tx_tb.vvp
-```
-
-### Step 3: View Waveforms
-Open the generated VCD file using GTKWave:
-```bash
-gtkwave sim/waves.vcd
-```
-
-## Expected Output
-When running the simulation, you should see the following console output:
-```text
---- TEST CASE 1: Reset Sequence ---
-PASS: Reset state verified successfully.
-
---- TEST CASE 2: Transmitting 8'h55 (Alternating Bits) ---
-[TB TIME: 70000] Initiated TX of 8'h55 with prescale 8
-
---- TEST CASE 3: Transmitting 8'hAA (Alternating Bits) ---
-[TB TIME: 970000] Initiated TX of 8'haa with prescale 8
-
---- TEST CASE 4: Transmitting 8'hF0 with Prescale = 12 ---
-[TB TIME: 1870000] Initiated TX of 8'hf0 with prescale 12
-
---- TEST CASE 5: Back-to-Back Transmission (0x3C then 0xC3) ---
-[TB TIME: 3170000] Initiated TX of 8'h3c with prescale 8
-[TB TIME: 4070000] Initiated TX of 8'hc3 with prescale 8
-
---- TEST CASE 6: Robustness Check (Ignore tx_start during active transmission) ---
-[TB TIME: 5170000] Initiated TX of 8'hff with prescale 16
-[TB TIME: 5210000] Attempted rogue tx_start during active transmission.
-
-All test cases completed successfully.
+[TB_START] Starting UART Transmitter Verification...
+[TC1] Verifying Reset and Idle State...
+[SUCCESS] TC1 Passed.
+[TC2] Transmitting Alternating Pattern 0x55 (01010101)...
+[SUCCESS] TC2 Completed.
+[TC3] Transmitting Alternating Pattern 0xAA (10101010)...
+[SUCCESS] TC3 Completed.
+[TC4] Verifying Back-to-Back Transmissions (0x3C then 0xC3)...
+[SUCCESS] TC4 Completed.
+[TC5] Transmitting 0xFF with slower Baud Rate (baud_limit = 20)...
+[SUCCESS] TC5 Completed.
+[TC6] Verifying tx_start is ignored during active transmission...
+[TC6] Injecting spurious tx_start = 1 while busy...
+[SUCCESS] TC6 Completed.
+[TB_FINISHED] All test cases executed successfully.
 ```
 
 ## Author and Date

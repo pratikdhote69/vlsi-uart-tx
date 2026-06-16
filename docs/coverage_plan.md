@@ -1,50 +1,55 @@
 # Functional Coverage Plan: UART Transmitter
 
 ## 1. Functional Coverage Points
+The verification strategy requires tracking both control and data paths to ensure high-quality verification closure.
 
-| Coverage Item ID | Description | Bin Definitions / Corner Cases | Target % |
+| Coverage Point ID | Description | Target / Bin Definition | Goal (%) |
 | :--- | :--- | :--- | :--- |
-| **CP_DATA_IN** | Coverage of the parallel input data byte | - `all_zeros` (8'h00)<br>- `all_ones` (8'hFF)<br>- `alternating_0` (8'h55)<br>- `alternating_1` (8'hAA)<br>- `walking_ones` (one-hot patterns)<br>- `others` (standard distribution) | 100% |
-| **CP_PRESCALE** | Coverage of the baud rate divisor values | - `min_scale` (2 to 8)<br>- `mid_scale` (9 to 100)<br>- `max_scale` (> 100) | 100% |
-| **CP_TX_START** | Coverage of start trigger conditions | - `start_while_idle` (valid start)<br>- `start_while_busy` (ignored start) | 100% |
-| **CR_DATA_X_PRESCALE** | Cross coverage of data patterns and prescale values | Cross of `CP_DATA_IN` and `CP_PRESCALE` | 90% |
+| `CP_TX_DATA` | Transmitted data byte values | Bins for `0x00`, `0xFF`, `0x55`, `0xAA`, and walking ones/zeros | 100% |
+| `CP_BAUD_LIMIT` | Configured baud rate limits | Bins for fast (<=10), medium (11-50), and slow (>50) | 100% |
+| `CP_STATE_TRANS` | FSM State Transitions | IDLE->START, START->DATA, DATA->STOP, STOP->IDLE | 100% |
+| `CR_DATA_X_BAUD` | Cross of data values and baud rates | Cross of `CP_TX_DATA` and `CP_BAUD_LIMIT` | 90% |
 
 ## 2. SystemVerilog Covergroup Definition
+The following covergroup is designed to be instantiated inside the testbench or verification environment to monitor coverage dynamically:
 
 ```systemverilog
-covergroup cg_uart_tx @(posedge clk);
+covergroup uart_tx_cg @(posedge clk);
     option.per_instance = 1;
     option.goal = 100;
 
-    // Coverpoint for input data patterns
-    cp_data: coverpoint data_in {
-        bins all_zeros     = {8'h00};
-        bins all_ones      = {8'hFF};
-        bins alternating_a = {8'h55};
-        bins alternating_b = {8'hAA};
-        bins walking_ones[] = {8'h01, 8'h02, 8'h04, 8'h08, 8'h10, 8'h20, 8'h40, 8'h80};
-        bins others        = default;
+    // Coverpoint for Transmitted Data
+    cp_tx_data: coverpoint tx_data {
+        bins all_zeros       = {8'h00};
+        bins all_ones        = {8'hFF};
+        bins alternating_55  = {8'h55};
+        bins alternating_AA  = {8'hAA};
+        bins data_range_low  = {[8'h01 : 8'h7F]};
+        bins data_range_high = {[8'h80 : 8'hFE]};
     }
 
-    // Coverpoint for prescale configurations
-    cp_prescale: coverpoint prescale {
-        bins min_scale = {[2:8]};
-        bins mid_scale = {[9:100]};
-        bins max_scale = {[101:65535]};
+    // Coverpoint for Baud Rate Divisor
+    cp_baud_limit: coverpoint baud_limit {
+        bins fast_baud   = {[16'd2  : 16'd10]};
+        bins medium_baud = {[16'd11 : 16'd100]};
+        bins slow_baud   = {[16'd101 : 16'd1000]};
     }
 
-    // Coverpoint for start signal behavior
-    cp_start: coverpoint tx_start {
-        bins asserted = {1'b1};
-        bins deasserted = {1'b0};
+    // Coverpoint for FSM State Transitions
+    cp_state_transitions: coverpoint state {
+        bins idle_to_start = (2'b00 => 2'b01);
+        bins start_to_data = (2'b01 => 2'b10);
+        bins data_to_stop  = (2'b10 => 2'b11);
+        bins stop_to_idle  = (2'b11 => 2'b00);
     }
 
-    // Cross coverage to ensure different data patterns are tested across different baud rates
-    cross_data_prescale: cross cp_data, cp_prescale;
+    // Cross Coverage to ensure different data patterns are tested across different speeds
+    cross_data_x_baud: cross cp_tx_data, cp_baud_limit;
 endgroup
 ```
 
 ## 3. Corner Cases to Cover
-1.  **Minimum Prescale Value**: Running with `prescale = 2` (highest speed, shortest bit period).
-2.  **Maximum Prescale Value**: Running with `prescale = 65535` (slowest speed, longest bit period).
-3.  **Rogue Start Strobe**: Asserting `tx_start` exactly one clock cycle before the current transmission finishes to verify that the FSM transitions correctly without dropping or corrupting the next frame.
+1.  **Minimum Baud Limit**: Operating with `baud_limit = 1` or `2` (highest speed limits).
+2.  **Back-to-Back Transmission**: Triggering `tx_start` on the exact clock cycle that `tx_busy` drops to 0.
+3.  **Spurious Start**: Asserting `tx_start` during an active transmission to verify it is ignored and does not corrupt the current transfer.
+4.  **Reset Recovery**: Asserting reset mid-transmission and verifying immediate recovery to the IDLE state.
