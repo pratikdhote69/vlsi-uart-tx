@@ -58,5 +58,6 @@ Upon running the simulation, you should see the following console output confirm
 ```
 
 ## Author and Date
-*   **Author**: Principal VLSI Design Verification Engineer
-*   **Date**: October 2023
+*   **Author**: Pratik dhote
+*   **Date**: 15-6-2025
+*   
